@@ -1,0 +1,8 @@
+[
+  {
+    "id": "deploy-sales_order_furniture",
+    "execute-command": "/www/wwwroot/Sales_Order_Furniture_Server/deploy.sh",
+    "response-message": "Sales_Order_Furni Deploy Started Successfully!"
+  }
+]
+
