@@ -1,7 +1,7 @@
 const User = require("../Models/Model");
 const bcrypt = require("bcrypt");
 const { generateToken } = require("../utils/config jwt");
-// Check
+//  Check Ci cd Today
 // Valid roles from User schema
 const VALID_ROLES = [
   "Production",
