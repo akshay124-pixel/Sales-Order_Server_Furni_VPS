@@ -10,13 +10,13 @@ let io;
 const initSocket = (server) => {
   io = new Server(server, {
     cors: {
-      origin: process.env.APP_URL ,
+      origin: process.env.APP_URL,
       methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"],
     },
-    path:"/furni/socket.io"
+    path: "/furni/socket.io"
   });
 
-   io.on("connection", (socket) => {
+  io.on("connection", (socket) => {
     console.log("Client connected:", socket.id);
     // Explicit, scoped room joins
     socket.on("join", async (data) => {
@@ -48,8 +48,8 @@ const initSocket = (server) => {
       console.log("Client disconnected:", socket.id);
     });
   });
- 
-// Set up MongoDB change stream to watch for Order collection changes
+
+  // Set up MongoDB change stream to watch for Order collection changes
   try {
     const changeStream = Order.watch([], { fullDocument: "updateLookup" });
     changeStream.on("change", async (change) => {
@@ -118,7 +118,7 @@ const initSocket = (server) => {
   } catch (error) {
     console.error("Error setting up change stream:", error);
   }
-}; 
+};
 // Shared function to create notifications
 function createNotification(req, order, action) {
   const username = req.user?.username || "User";
@@ -442,25 +442,24 @@ const createOrder = async (req, res) => {
 
     // Save order
     const savedOrder = await order.save();
-   
-   const notification = new Notification({
-      message: `New sales order created by ${req.user.username || "User"} for ${
-        savedOrder.customername || "Unknown"
-      } (Order ID: ${savedOrder.orderId || "N/A"})`,
+
+    const notification = new Notification({
+      message: `New sales order created by ${req.user.username || "User"} for ${savedOrder.customername || "Unknown"
+        } (Order ID: ${savedOrder.orderId || "N/A"})`,
       timestamp: new Date(),
       isRead: false,
       role: "All",
       userId: req.user.id,
     });
     await notification.save();
-   
+
     try {
       const notifRooms = new Set();
-   
+
       if (savedOrder?.createdBy) notifRooms.add(`user:${String(savedOrder.createdBy)}`);
-    
+
       if (savedOrder?.assignedTo) notifRooms.add(`user:${String(savedOrder.assignedTo)}`);
-     
+
       notifRooms.add("admins");
 
       const notifPayload = {
@@ -471,8 +470,8 @@ const createOrder = async (req, res) => {
         userId: notification.userId ? String(notification.userId) : null,
         orderId: savedOrder.orderId || String(savedOrder._id),
       };
-     
-      io.to([...notifRooms]).emit("notification", notifPayload); 
+
+      io.to([...notifRooms]).emit("notification", notifPayload);
     } catch (emitErr) {
       console.warn("Failed to emit scoped notification:", emitErr?.message);
     }
@@ -547,7 +546,6 @@ const editEntry = async (req, res) => {
       "company",
       "installationReport",
       "transporterDetails",
-      
       "receiptDate",
       "shippingAddress",
       "billingAddress",
@@ -593,22 +591,27 @@ const editEntry = async (req, res) => {
       }
     }
 
-    // Automatically set completionStatus to
-    if (updateData.fulfillingStatus === "Fulfilled") {
-      updateFields.completionStatus = "Complete";
-      if (!updateFields.fulfillmentDate) {
-        updateFields.fulfillmentDate = new Date();
+    const prevFulfill = existingOrder.fulfillingStatus;
+    const newFulfill = updateData.fulfillingStatus;
+
+    if (newFulfill && prevFulfill !== newFulfill) {
+      if (newFulfill === "Fulfilled") {
+        updateFields.completionStatus = "Complete";
+        if (!existingOrder.fulfillmentDate) {
+          updateFields.fulfillmentDate = new Date();
+        }
+      }
+
+      if (newFulfill === "Order Cancel") {
+        updateFields.sostatus = "Order Cancelled";
+      }
+
+      if (newFulfill === "Hold") {
+        updateFields.sostatus = "Hold By Production";
       }
     }
-    // Automatically set completionStatus when order is cancelled
-if (updateData.fulfillingStatus === "Order Cancel") {
-  updateFields.sostatus = "Order Cancelled";
 
-}
-if (updateData.fulfillingStatus === "Hold") {
-  updateFields.sostatus = "Hold By Production";
-}
-    // Update the order
+    // Update order
     const updatedOrder = await Order.findByIdAndUpdate(
       orderId,
       { $set: updateFields },
@@ -620,8 +623,7 @@ if (updateData.fulfillingStatus === "Hold") {
         success: false,
         error: "Order not found",
       });
-    } 
-
+    }
     if (
       updateFields.sostatus === "Approved" &&
       updatedOrder.customerEmail &&
@@ -635,13 +637,12 @@ Dear ${updatedOrder.customername || "Customer"},
 We're thrilled to confirm that your order for the following products has been approved! Get ready for an amazing experience with Promark Tech Solutions:
 
 ${updatedOrder.products
-  .map(
-    (p, i) =>
-      `${i + 1}. ${p.productType} - Qty: ${p.qty}, Unit Price: ₹${
-        p.unitPrice
-      }, Brand: ${p.brand}`
-  )
-  .join("\n")}
+            .map(
+              (p, i) =>
+                `${i + 1}. ${p.productType} - Qty: ${p.qty}, Unit Price: ₹${p.unitPrice
+                }, Brand: ${p.brand}`
+            )
+            .join("\n")}
 
 Total: ₹${updatedOrder.total || 0}
 
@@ -735,15 +736,15 @@ The Promark Tech Solutions Crew
                <div class="products" style="margin-top:10px;">
   <ul style="list-style-type:none; padding:0; margin:0;">
     ${updatedOrder.products
-      .map(
-        (p, i) =>
-          `<li style="margin-bottom:8px; padding:6px 10px;">
+            .map(
+              (p, i) =>
+                `<li style="margin-bottom:8px; padding:6px 10px;">
             <strong style="color:#333;">${p.productType}</strong> 
             <span style="margin-left:10px; color:#555;">Qty: ${p.qty}</span>, 
            
           </li>`
-      )
-      .join("")}
+            )
+            .join("")}
   </ul>
 </div>
 
@@ -774,30 +775,33 @@ The Promark Tech Solutions Crew
     }
     // Send email if dispatchStatus is updated to "Dispatched" or "Delivered"
 
+    const prevDispatch = existingOrder.dispatchStatus;
+    const newDispatch = updateFields.dispatchStatus;
+
     if (
-      (updateFields.dispatchStatus === "Dispatched" ||
-        updateFields.dispatchStatus === "Delivered") &&
+      newDispatch &&
+      prevDispatch !== newDispatch &&
+      (newDispatch === "Dispatched" || newDispatch === "Delivered") &&
       updatedOrder.customerEmail
     ) {
-     try {
+      try {
         const statusText =
           updateFields.dispatchStatus === "Dispatched"
             ? "dispatched"
             : "delivered";
-        const subject = `Your Order Has Been ${
-          statusText.charAt(0).toUpperCase() + statusText.slice(1)
-        }!`;
+        const subject = `Your Order Has Been ${statusText.charAt(0).toUpperCase() + statusText.slice(1)
+          }!`;
         const text = `
 Dear ${updatedOrder.customername || "Customer"},
 
 Great news! Your order has been ${statusText}. Here are the details of your order:
 
 ${updatedOrder.products
-  .map(
-    (p, i) =>
-      `${i + 1}. ${p.productType} - Qty: ${p.qty}, Brand: ${p.brand}, Size: ${p.size}, Spec: ${p.spec}`
-  )
-  .join("\n")}
+            .map(
+              (p, i) =>
+                `${i + 1}. ${p.productType} - Qty: ${p.qty}, Brand: ${p.brand}, Size: ${p.size}, Spec: ${p.spec}`
+            )
+            .join("\n")}
 We're here to support you every step of the way!
 
 Cheers,
@@ -880,9 +884,8 @@ The Promark Tech Solutions Crew
           <body>
             <div class="container">
               <div class="hero">
-                <h1>Order ${
-          statusText.charAt(0).toUpperCase() + statusText.slice(1)
-        }!</h1>
+                <h1>Order ${statusText.charAt(0).toUpperCase() + statusText.slice(1)
+          }!</h1>
                 <p>Your Next Step with Promark Tech Solutions!</p>
               </div>
               <div class="content">
@@ -891,14 +894,14 @@ The Promark Tech Solutions Crew
                 <div class="products" style="margin-top:10px;">
   <ul style="list-style-type:none; padding:0; margin:0;">
     ${updatedOrder.products
-      .map(
-        (p, i) =>
-          `<li style="margin-bottom:10px; padding:8px 12px;">
+            .map(
+              (p, i) =>
+                `<li style="margin-bottom:10px; padding:8px 12px;">
             <strong style="color:#333;">${p.productType}</strong> 
             <span style="margin-left:12px; color:#555;">Qty: ${p.qty}</span>
           </li>`
-      )
-      .join("")}
+            )
+            .join("")}
   </ul>
 </div>
                 <p>We're here to ensure your experience is nothing short of spectacular! Reach out with any questions or to explore what's next.</p>
@@ -927,22 +930,20 @@ The Promark Tech Solutions Crew
     }
 
     // Create and save notification
-   const notification = new Notification({
-  message: `Order updated by ${
-    req.user?.username || 
-    req.user?.name || 
-    req.user?.email || 
-    req.user?.id || 
-    "Unknown User"
-  } for ${updatedOrder.customername || "Unknown"} (Order ID: ${
-    updatedOrder.orderId || "N/A"
-  })`,
-  timestamp: new Date(),
-  isRead: false,
-  role: "All",
-  userId: req.user?.id || null,
-});
-await notification.save();
+    const notification = new Notification({
+      message: `Order updated by ${req.user?.username ||
+        req.user?.name ||
+        req.user?.email ||
+        req.user?.id ||
+        "Unknown User"
+        } for ${updatedOrder.customername || "Unknown"} (Order ID: ${updatedOrder.orderId || "N/A"
+        })`,
+      timestamp: new Date(),
+      isRead: false,
+      role: "All",
+      userId: req.user?.id || null,
+    });
+    await notification.save();
     try {
       const notifRooms = new Set();
       if (updatedOrder?.createdBy)
@@ -959,7 +960,7 @@ await notification.save();
         userId: notification.userId ? String(notification.userId) : null,
         orderId: updatedOrder.orderId || String(updatedOrder._id),
       };
-      
+
       io.to([...notifRooms]).emit("notification", notifPayload);
     } catch (emitErr) {
       console.warn("Failed to emit scoped notification (editEntry):", emitErr?.message);
@@ -1006,7 +1007,7 @@ const DeleteData = async (req, res) => {
     await notification.save();
 
     // Emit only to the order owner and admins
-       const targetRooms = new Set();
+    const targetRooms = new Set();
     targetRooms.add(`user:${String(order.createdBy)}`);
     if (order.assignedTo) targetRooms.add(`user:${String(order.assignedTo)}`);
     const payload = {
@@ -1016,7 +1017,7 @@ const DeleteData = async (req, res) => {
       createdBy: String(order.createdBy),
       assignedTo: order.assignedTo ? String(order.assignedTo) : null,
     };
-    
+
     io.to([...targetRooms]).emit("deleteOrder", payload);
 
 
@@ -1094,8 +1095,8 @@ const bulkUploadOrders = async (req, res) => {
           gst: row["GST"] || "18",
           modelNos: row["Model Nos"]
             ? String(row["Model Nos"])
-                .split(",")
-                .map((m) => m.trim())
+              .split(",")
+              .map((m) => m.trim())
             : [],
           brand: row["Brand"] || "",
           warranty:
@@ -1103,8 +1104,8 @@ const bulkUploadOrders = async (req, res) => {
             (row["Order Type"] === "B2G"
               ? "As Per Tender"
               : row["Product Type"] === "IFPD" && row["Brand"] === "Promark"
-              ? "3 Years"
-              : "1 Year"),
+                ? "3 Years"
+                : "1 Year"),
         },
       ];
 
@@ -1288,18 +1289,18 @@ const exportentry = async (req, res) => {
         Array.isArray(entry.products) && entry.products.length > 0
           ? entry.products
           : [
-              {
-                productType: "Not Found",
-                size: "N/A",
-                spec: "N/A",
-                qty: 0,
-                unitPrice: 0,
-                serialNos: [],
-                modelNos: [],
-                gst: 0,
-                brand: "",
-              },
-            ];
+            {
+              productType: "Not Found",
+              size: "N/A",
+              spec: "N/A",
+              qty: 0,
+              unitPrice: 0,
+              serialNos: [],
+              modelNos: [],
+              gst: 0,
+              brand: "",
+            },
+          ];
 
       return products.map((product, index) => {
         const entryData = {
@@ -1337,81 +1338,81 @@ const exportentry = async (req, res) => {
         const conditionalData =
           index === 0
             ? {
-                total: entry.total || 0,
-                paymentCollected: entry.paymentCollected || "",
-                paymentMethod: entry.paymentMethod || "",
-                paymentDue: entry.paymentDue || "",
-                neftTransactionId: entry.neftTransactionId || "",
-                chequeId: entry.chequeId || "",
-                freightcs: entry.freightcs || "",
-                freightstatus: entry.freightstatus || "",
-                installchargesstatus: entry.installchargesstatus || "",
-                gstno: entry.gstno || "",
-                orderType: entry.orderType || "Private",
-                installation: entry.installation || "N/A",
-                installationStatus: entry.installationStatus || "Pending",
-                remarksByInstallation: entry.remarksByInstallation || "",
-                dispatchStatus: entry.dispatchStatus || "Not Dispatched",
-                salesPerson: entry.salesPerson || "",
-                report: entry.report || "",
-                company: entry.company || "Promark",
+              total: entry.total || 0,
+              paymentCollected: entry.paymentCollected || "",
+              paymentMethod: entry.paymentMethod || "",
+              paymentDue: entry.paymentDue || "",
+              neftTransactionId: entry.neftTransactionId || "",
+              chequeId: entry.chequeId || "",
+              freightcs: entry.freightcs || "",
+              freightstatus: entry.freightstatus || "",
+              installchargesstatus: entry.installchargesstatus || "",
+              gstno: entry.gstno || "",
+              orderType: entry.orderType || "Private",
+              installation: entry.installation || "N/A",
+              installationStatus: entry.installationStatus || "Pending",
+              remarksByInstallation: entry.remarksByInstallation || "",
+              dispatchStatus: entry.dispatchStatus || "Not Dispatched",
+              salesPerson: entry.salesPerson || "",
+              report: entry.report || "",
+              company: entry.company || "Promark",
 
-                transporterDetails: entry.transporterDetails || "",
-               
-                shippingAddress: entry.shippingAddress || "",
-                billingAddress: entry.billingAddress || "",
-                invoiceNo: entry.invoiceNo || "",
-                fulfillingStatus: entry.fulfillingStatus || "Pending",
-                remarksByProduction: entry.remarksByProduction || "",
-                remarksByAccounts: entry.remarksByAccounts || "",
-                paymentReceived: entry.paymentReceived || "Not Received",
-                billNumber: entry.billNumber || "",
-                piNumber: entry.piNumber || "",
-                remarksByBilling: entry.remarksByBilling || "",
-                verificationRemarks: entry.verificationRemarks || "",
-                billStatus: entry.billStatus || "Pending",
-                completionStatus: entry.completionStatus || "In Progress",
-                remarks: entry.remarks || "",
-                sostatus: entry.sostatus || "Pending for Approval",
-              }
+              transporterDetails: entry.transporterDetails || "",
+
+              shippingAddress: entry.shippingAddress || "",
+              billingAddress: entry.billingAddress || "",
+              invoiceNo: entry.invoiceNo || "",
+              fulfillingStatus: entry.fulfillingStatus || "Pending",
+              remarksByProduction: entry.remarksByProduction || "",
+              remarksByAccounts: entry.remarksByAccounts || "",
+              paymentReceived: entry.paymentReceived || "Not Received",
+              billNumber: entry.billNumber || "",
+              piNumber: entry.piNumber || "",
+              remarksByBilling: entry.remarksByBilling || "",
+              verificationRemarks: entry.verificationRemarks || "",
+              billStatus: entry.billStatus || "Pending",
+              completionStatus: entry.completionStatus || "In Progress",
+              remarks: entry.remarks || "",
+              sostatus: entry.sostatus || "Pending for Approval",
+            }
             : {
-                total: "",
-                paymentCollected: "",
-                paymentMethod: "",
-                paymentDue: "",
-                neftTransactionId: "",
-                chequeId: "",
-                freightcs: "",
-                freightstatus: "",
-                installchargesstatus: "",
-                gstno: "",
-                orderType: "",
-                installation: "",
-                installationStatus: "",
-                remarksByInstallation: "",
-                dispatchStatus: "",
-                salesPerson: "",
-                report: "",
-                company: "",
+              total: "",
+              paymentCollected: "",
+              paymentMethod: "",
+              paymentDue: "",
+              neftTransactionId: "",
+              chequeId: "",
+              freightcs: "",
+              freightstatus: "",
+              installchargesstatus: "",
+              gstno: "",
+              orderType: "",
+              installation: "",
+              installationStatus: "",
+              remarksByInstallation: "",
+              dispatchStatus: "",
+              salesPerson: "",
+              report: "",
+              company: "",
 
-                transporterDetails: "",
-               
-                shippingAddress: "",
-                billingAddress: "",
-                invoiceNo: "",
-                fulfillingStatus: "",
-                remarksByProduction: "",
-                remarksByAccounts: "",
-                paymentReceived: "",
-                billNumber: "",
-                piNumber: "",
-                remarksByBilling: "",
-                verificationRemarks: "",
-                billStatus: "",
-                completionStatus: "",
-                remarks: "",
-                sostatus: "",
-              };
+              transporterDetails: "",
+
+              shippingAddress: "",
+              billingAddress: "",
+              invoiceNo: "",
+              fulfillingStatus: "",
+              remarksByProduction: "",
+              remarksByAccounts: "",
+              paymentReceived: "",
+              billNumber: "",
+              piNumber: "",
+              remarksByBilling: "",
+              verificationRemarks: "",
+              billStatus: "",
+              completionStatus: "",
+              remarks: "",
+              sostatus: "",
+            };
 
         const dateData = {
           receiptDate: entry.receiptDate
@@ -1482,7 +1483,7 @@ const getVerificationOrders = async (req, res) => {
   try {
     const orders = await Order.find({
       paymentTerms: { $in: ["100% Advance", "Partial Advance"] },
-      sostatus: { $nin: ["Accounts Approved", "Approved"] },
+      sostatus: { $nin: ["Accounts Approved", "Approved", "Order Cancelled"] },
     }).populate("createdBy", "username email");
     res.json({ success: true, data: orders });
   } catch (error) {
@@ -1600,9 +1601,9 @@ const getProductionOrders = async (req, res) => {
     ];
 
     const orders = await Order.find({
-     sostatus: { $in: ["Approved", "Hold By Production"] },
+      sostatus: { $in: ["Approved", "Hold By Production"] },
       dispatchFrom: { $nin: dispatchFromOptions },
-      fulfillingStatus: { $nin:["Fulfilled", "Order Cancel"]},
+      fulfillingStatus: { $nin: ["Fulfilled", "Order Cancel"] },
     }).lean();
 
     res.status(200).json({ success: true, data: orders });
@@ -1703,5 +1704,5 @@ module.exports = {
   getNotifications,
   markNotificationsRead,
   clearNotifications,
-  getDashboardCounts 
+  getDashboardCounts
 };
