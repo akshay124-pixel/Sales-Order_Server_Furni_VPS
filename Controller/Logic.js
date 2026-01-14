@@ -3,6 +3,7 @@ const XLSX = require("xlsx");
 const { Server } = require("socket.io");
 const { Order, Notification } = require("../Models/Schema");
 const User = require("../Models/Model");
+const logger = require("../utils/logger");
 
 const { sendMail } = require("../utils/mailer");
 let io;
@@ -17,7 +18,7 @@ const initSocket = (server) => {
   });
 
   io.on("connection", (socket) => {
-    console.log("Client connected:", socket.id);
+    logger.info("Client connected", { socketId: socket.id });
     // Explicit, scoped room joins
     socket.on("join", async (data) => {
       try {
@@ -33,19 +34,19 @@ const initSocket = (server) => {
               socket.join(`leader:${dbUser.assignedToLeader}`);
             }
           } catch (lookupErr) {
-            console.warn("Failed to look up user for leader room join:", lookupErr?.message);
+            logger.warn("Failed to look up user for leader room join", { error: lookupErr?.message });
           }
         }
         if (role === "Admin") {
           socket.join("admins");
         }
-        console.log(`Socket ${socket.id} joined scoped rooms for user:`, userId || "unknown");
+        logger.info("Socket joined rooms", { socketId: socket.id, userId: userId || "unknown" });
       } catch (err) {
-        console.warn("Join handler error for", socket.id, err?.message);
+        logger.warn("Join handler error", { socketId: socket.id, error: err?.message });
       }
     });
     socket.on("disconnect", () => {
-      console.log("Client disconnected:", socket.id);
+      logger.info("Client disconnected", { socketId: socket.id });
     });
   });
 
@@ -53,7 +54,7 @@ const initSocket = (server) => {
   try {
     const changeStream = Order.watch([], { fullDocument: "updateLookup" });
     changeStream.on("change", async (change) => {
-      console.log("Order collection change detected:", change.operationType);
+      logger.debug("Order collection change detected", { operationType: change.operationType });
       const fullDoc = change.fullDocument;
       const documentId = change.documentKey?._id;
       // Only emit to scoped rooms based on ownership
@@ -102,21 +103,21 @@ const initSocket = (server) => {
         });
         io.to("admins").emit("dashboardCounts", { all, installation, production, dispatch });
       } catch (countErr) {
-        console.warn("Failed to emit admin dashboardCounts:", countErr?.message);
+        logger.warn("Failed to emit admin dashboardCounts", { error: countErr?.message });
       }
     });
 
     // Handle change stream errors
     changeStream.on("error", (error) => {
-      console.error("Change stream error:", error);
+      logger.error("Change stream error", { error });
     });
 
     // Handle change stream close
     changeStream.on("close", () => {
-      console.log("Change stream closed");
+      logger.info("Change stream closed");
     });
   } catch (error) {
-    console.error("Error setting up change stream:", error);
+    logger.error("Error setting up change stream", { error });
   }
 };
 // Shared function to create notifications
@@ -188,7 +189,7 @@ const getDashboardCounts = async (req, res) => {
 
     return res.status(200).json({ all, installation, production, dispatch });
   } catch (error) {
-    console.error("Error in getDashboardCounts:", error);
+    logger.error("Error in getDashboardCounts", { error });
     return res.status(500).json({ success: false, error: "Failed to fetch dashboard counts" });
   }
 };
@@ -213,7 +214,7 @@ const getAllOrders = async (req, res) => {
 
     res.json(orders);
   } catch (error) {
-    console.error("Error in getAllOrders:", error.message);
+    logger.error("Error in getAllOrders:", { error: error.message });
     res.status(500).json({ error: "Server error" });
   }
 };
@@ -473,11 +474,11 @@ const createOrder = async (req, res) => {
 
       io.to([...notifRooms]).emit("notification", notifPayload);
     } catch (emitErr) {
-      console.warn("Failed to emit scoped notification:", emitErr?.message);
+      logger.warn("Failed to emit scoped notification", { error: emitErr?.message });
     }
     res.status(201).json({ success: true, data: savedOrder });
   } catch (error) {
-    console.error("Error in createOrder:", error);
+    logger.error("Error in createOrder", { error });
     if (error.name === "ValidationError") {
       const messages = Object.values(error.errors).map((err) => err.message);
       return res.status(400).json({
@@ -501,7 +502,7 @@ const editEntry = async (req, res) => {
     const updateData = req.body;
 
     // Log request body for debugging
-    console.log("Edit request body:", updateData);
+    logger.debug("Edit request body", { updateData });
 
     // Fetch existing order
     const existingOrder = await Order.findById(orderId);
@@ -767,10 +768,7 @@ The Promark Tech Solutions Crew
         `;
         await sendMail(updatedOrder.customerEmail, subject, text, html);
       } catch (mailErr) {
-        console.error(
-          "Order confirmation email sending failed:",
-          mailErr.message
-        );
+        logger.error("Order confirmation email sending failed", { error: mailErr.message });
       }
     }
     // Send email if dispatchStatus is updated to "Dispatched" or "Delivered"
@@ -922,10 +920,7 @@ The Promark Tech Solutions Crew
         `;
         await sendMail(updatedOrder.customerEmail, subject, text, html);
       } catch (mailErr) {
-        console.error(
-          `${updateFields.dispatchStatus} email sending failed:`,
-          mailErr.message
-        );
+        logger.error("Shipment email sending failed", { status: updateFields.dispatchStatus, error: mailErr.message });
       }
     }
 
@@ -963,12 +958,12 @@ The Promark Tech Solutions Crew
 
       io.to([...notifRooms]).emit("notification", notifPayload);
     } catch (emitErr) {
-      console.warn("Failed to emit scoped notification (editEntry):", emitErr?.message);
+      logger.warn("Failed to emit scoped notification (editEntry)", { error: emitErr?.message });
     }
 
     res.status(200).json({ success: true, data: updatedOrder });
   } catch (error) {
-    console.error("Error in editEntry:", error);
+    logger.error("Error in editEntry", { error });
     res.status(500).json({
       success: false,
       error: "Server error",
@@ -1034,14 +1029,14 @@ const DeleteData = async (req, res) => {
       };
       io.to([...notifRooms]).emit("notification", notifPayload);
     } catch (emitErr) {
-      console.warn("Failed to emit scoped notification (deleteOrder):", emitErr?.message);
+      logger.warn("Failed to emit scoped notification (deleteOrder)", { error: emitErr?.message });
     }
 
     res
       .status(200)
       .json({ success: true, message: "Order deleted successfully" });
   } catch (error) {
-    console.error("Error deleting order:", error);
+    logger.error("Error deleting order", { error });
     res.status(500).json({
       success: false,
       message: "Failed to delete order",
@@ -1233,7 +1228,7 @@ const bulkUploadOrders = async (req, res) => {
       data: savedOrders,
     });
   } catch (error) {
-    console.error("Error in bulkUploadOrders:", error);
+    logger.error("Error in bulkUploadOrders", { error });
     if (error.name === "ValidationError") {
       const messages = Object.values(error.errors).map((err) => err.message);
       return res.status(400).json({
@@ -1452,7 +1447,7 @@ const exportentry = async (req, res) => {
     );
     res.send(fileBuffer);
   } catch (error) {
-    console.error("Error in exportentry:", error);
+    logger.error("Error in exportentry", { error });
     res.status(500).json({
       success: false,
       message: "Failed to export orders",
@@ -1470,7 +1465,7 @@ const getFinishedGoodsOrders = async (req, res) => {
     }).populate("createdBy", "username email");
     res.status(200).json({ success: true, data: orders });
   } catch (error) {
-    console.error("Error in getFinishedGoodsOrders:", error.message);
+    logger.error("Error in getFinishedGoodsOrders", { error: error.message });
     res.status(500).json({
       success: false,
       message: "Failed to fetch finished goods orders",
@@ -1487,7 +1482,7 @@ const getVerificationOrders = async (req, res) => {
     }).populate("createdBy", "username email");
     res.json({ success: true, data: orders });
   } catch (error) {
-    console.error("Error in getVerificationOrders:", error);
+    logger.error("Error in getVerificationOrders", { error });
     res.status(500).json({
       success: false,
       message: "Failed to fetch verification orders",
@@ -1504,7 +1499,7 @@ const getBillOrders = async (req, res) => {
     }).populate("createdBy", "username email");
     res.json({ success: true, data: orders });
   } catch (error) {
-    console.error("Error in getBillOrders:", error);
+    logger.error("Error in getBillOrders", { error });
     res.status(500).json({
       success: false,
       message: "Failed to fetch bill orders",
@@ -1534,7 +1529,7 @@ const getInstallationOrders = async (req, res) => {
     }).populate("createdBy", "username email");
     res.json({ success: true, data: orders });
   } catch (error) {
-    console.error("Error in getInstallationOrders:", error);
+    logger.error("Error in getInstallationOrders", { error });
     res.status(500).json({
       success: false,
       message: "Failed to fetch installation orders",
@@ -1553,7 +1548,7 @@ const getAccountsOrders = async (req, res) => {
 
     res.json({ success: true, data: orders });
   } catch (error) {
-    console.error("Error in getAccountsOrders:", error);
+    logger.error("Error in getAccountsOrders", { error });
     res.status(500).json({
       success: false,
       message: "Failed to fetch accounts orders",
@@ -1578,7 +1573,7 @@ const getProductionApprovalOrders = async (req, res) => {
     }).populate("createdBy", "username email");
     res.json({ success: true, data: orders });
   } catch (error) {
-    console.error("Error in getProductionApprovalOrders:", error);
+    logger.error("Error in getProductionApprovalOrders", { error });
     res.status(500).json({
       success: false,
       message: "Failed to fetch production approval orders",
@@ -1608,7 +1603,7 @@ const getProductionOrders = async (req, res) => {
 
     res.status(200).json({ success: true, data: orders });
   } catch (error) {
-    console.error("Error in getProductionOrders:", error.message);
+    logger.error("Error in getProductionOrders", { error: error.message });
     res.status(500).json({
       success: false,
       message: "Error fetching production orders",
@@ -1624,7 +1619,7 @@ const getNotifications = async (req, res) => {
         message: "Unauthorized: User not authenticated",
       });
     }
-    console.log("Fetching notifications for user:", req.user.id);
+    logger.info("Fetching notifications", { userId: req.user.id });
     const notifications = await Notification.find({
       $or: [
         { role: "All" },
@@ -1633,13 +1628,13 @@ const getNotifications = async (req, res) => {
     })
       .sort({ timestamp: -1 })
       .limit(50);
-    console.log("Notifications found:", notifications.length);
+    logger.info("Notifications found", { count: notifications.length });
     res.status(200).json({ success: true, data: notifications });
   } catch (error) {
-    console.error("Error in getNotifications:", {
-      message: error.message,
+    logger.error("Error in getNotifications", {
+      error: error.message,
       stack: error.stack,
-      name: error.name,
+      name: error.name
     });
     res.status(500).json({
       success: false,
@@ -1660,7 +1655,7 @@ const markNotificationsRead = async (req, res) => {
       .status(200)
       .json({ success: true, message: "Notifications marked as read" });
   } catch (error) {
-    console.error("Error in markNotificationsRead:", error.stack);
+    logger.error("Error in markNotificationsRead", { stack: error.stack });
     res.status(500).json({
       success: false,
       message: "Failed to mark notifications as read",
@@ -1678,7 +1673,7 @@ const clearNotifications = async (req, res) => {
     await Notification.deleteMany(filter);
     res.status(200).json({ success: true, message: "Notifications cleared" });
   } catch (error) {
-    console.error("Error in clearNotifications:", error.stack);
+    logger.error("Error in clearNotifications", { stack: error.stack });
     res.status(500).json({
       success: false,
       message: "Failed to clear notifications",

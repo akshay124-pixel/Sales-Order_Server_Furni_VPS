@@ -1,6 +1,7 @@
 const User = require("../Models/Model");
 const bcrypt = require("bcrypt");
 const { generateToken } = require("../utils/config jwt");
+const logger = require("../utils/logger");
 
 // Valid roles from User schema
 const VALID_ROLES = [
@@ -60,7 +61,7 @@ const Signup = async (req, res) => {
       token,
     });
   } catch (error) {
-    console.error("Signup Error:", error);
+    logger.error("Signup Error:", { error: error.message, stack: error.stack });
     return res.status(500).json({
       message: "An error occurred during signup",
       error: error.message,
@@ -79,13 +80,13 @@ const Login = async (req, res) => {
 
     const user = await User.findOne({ email });
     if (!user) {
-      console.error("User not found:", email);
+      logger.warn("Login failed: User not found", { email });
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      console.error("Incorrect password for user:", email);
+      logger.warn("Login failed: Incorrect password", { email });
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
@@ -102,7 +103,7 @@ const Login = async (req, res) => {
       token,
     });
   } catch (error) {
-    console.error("Login Error:", error);
+    logger.error("Login Error:", { error: error.message, stack: error.stack });
     return res.status(500).json({
       message: "An error occurred during login",
       error: error.message,
@@ -114,7 +115,7 @@ const ChangePassword = async (req, res) => {
     const { currentPassword, newPassword } = req.body;
     const userId = req.user.id; // From JWT middleware
 
-    console.log("ChangePassword: Request received", { userId });
+    logger.info("ChangePassword: Request received", { userId });
 
     if (!currentPassword || !newPassword) {
       return res.status(400).json({
@@ -144,7 +145,7 @@ const ChangePassword = async (req, res) => {
 
     const user = await User.findById(userId);
     if (!user) {
-      console.log("ChangePassword: User not found", { userId });
+      logger.warn("ChangePassword: User not found", { userId });
       return res
         .status(404)
         .json({ success: false, message: "User not found" });
@@ -152,9 +153,7 @@ const ChangePassword = async (req, res) => {
 
     const isMatch = await bcrypt.compare(currentPassword, user.password);
     if (!isMatch) {
-      console.log("ChangePassword: Current password incorrect for user", {
-        userId,
-      });
+      logger.warn("ChangePassword: Current password incorrect", { userId });
       return res
         .status(401)
         .json({ success: false, message: "Current password is incorrect" });
@@ -165,9 +164,7 @@ const ChangePassword = async (req, res) => {
     user.lastPasswordChange = new Date();
     await user.save();
 
-    console.log("ChangePassword: Password changed successfully for user", {
-      userId,
-    });
+    logger.info("ChangePassword: Password changed successfully", { userId });
 
     // Emit Socket.IO event for audit logging
     const io = req.app.get("io");
@@ -184,7 +181,7 @@ const ChangePassword = async (req, res) => {
       message: "Password changed successfully",
     });
   } catch (error) {
-    console.error("Change Password Error:", error);
+    logger.error("Change Password Error:", { error: error.message, stack: error.stack });
     return res.status(500).json({
       success: false,
       message: "An error occurred while changing password",

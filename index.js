@@ -3,6 +3,8 @@ const express = require("express");
 const cors = require("cors");
 const http = require("http");
 const path = require("path");
+const logger = require("./utils/logger");
+const httpLogger = require("./Middleware/httpLogger");
 const SignupRoute = require("./Router/SignupRoute");
 const LoginRoute = require("./Router/LoginRoute");
 const dbconnect = require("./utils/dbconnect");
@@ -25,6 +27,7 @@ const corsOptions = {
 };
 
 // Middleware
+app.use(httpLogger); // Register HTTP logger first
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cors(corsOptions));
@@ -39,10 +42,10 @@ const PORT = process.env.PORT || 6000;
 dbconnect()
   .then(() => {
     server.listen(PORT, () => {
-      console.log(`App listening on port ${PORT}!`);
+      logger.info(`App listening on port ${PORT}!`);
     });
   })
   .catch((error) => {
-    console.error("Database connection failed", error);
+    logger.error("Database connection failed", error);
     process.exit(1);
   });

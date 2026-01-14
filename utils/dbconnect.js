@@ -1,15 +1,14 @@
 const mongoose = require("mongoose");
 
+const logger = require("./logger");
+
 const URI = process.env.DB_URL;
 const dbconnect = async () => {
   try {
-    await mongoose.connect(URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
-    console.log("Database connected");
+    await mongoose.connect(URI);
+    logger.info("Database connected");
   } catch (error) {
-    console.error("Error connecting to database:", error.message);
+    logger.error("Error connecting to database:", { error: error.message, stack: error.stack });
   }
 };
 
