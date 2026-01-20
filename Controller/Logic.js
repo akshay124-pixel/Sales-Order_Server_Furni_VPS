@@ -410,7 +410,7 @@ const createOrder = async (req, res) => {
       freightcs: freightcs || "",
       freightstatus: freightstatus || "Extra",
       installchargesstatus: installchargesstatus || "Extra",
-      installation: installation || "N/A",
+      installation: installation || "",
       report,
       salesPerson,
       company,
@@ -590,6 +590,11 @@ const editEntry = async (req, res) => {
           updateFields[field] = updateData[field];
         }
       }
+    }
+
+    // Handle File Upload
+    if (req.file) {
+      updateFields.installationFile = req.file.filename;
     }
 
     const prevFulfill = existingOrder.fulfillingStatus;
@@ -1186,7 +1191,7 @@ const bulkUploadOrders = async (req, res) => {
         freightcs: row["Freight Charges"] || "",
         freightstatus: row["Freight Status"] || "Extra",
         installchargesstatus: row["Installation Charges Status"] || "Extra",
-        installation: row["Installation Charges"] || "N/A",
+        installation: row["Installation Charges"] || "",
         report: row["Reporting Manager"] || "",
         salesPerson: row["Sales Person"] || "",
         company: row["Company"] || "Promark",
@@ -1344,7 +1349,7 @@ const exportentry = async (req, res) => {
               installchargesstatus: entry.installchargesstatus || "",
               gstno: entry.gstno || "",
               orderType: entry.orderType || "Private",
-              installation: entry.installation || "N/A",
+              installation: entry.installation || "",
               installationStatus: entry.installationStatus || "Pending",
               remarksByInstallation: entry.remarksByInstallation || "",
               dispatchStatus: entry.dispatchStatus || "Not Dispatched",
@@ -1514,6 +1519,7 @@ const getInstallationOrders = async (req, res) => {
     const orders = await Order.find({
       dispatchStatus: "Delivered",
       // stamp: "Received",
+      installchargesstatus: { $ne: "Not in Scope" },
       installationReport: { $ne: "Yes" },
       installationStatus: {
         $in: [
@@ -1542,8 +1548,11 @@ const getInstallationOrders = async (req, res) => {
 const getAccountsOrders = async (req, res) => {
   try {
     const orders = await Order.find({
-      installationStatus: "Completed",
       paymentReceived: { $ne: "Received" },
+      $or: [
+        { installationStatus: "Completed" },
+        { installchargesstatus: "Not in Scope" },
+      ],
     }).populate("createdBy", "username email");
 
     res.json({ success: true, data: orders });
@@ -1681,9 +1690,174 @@ const clearNotifications = async (req, res) => {
     });
   }
 };
+// Installation Mail
+const sendInstallationCompletionMail = async (req, res) => {
+  try {
+    const { orderId } = req.body;
+    const order = await Order.findById(orderId).populate(
+      "createdBy",
+      "username email",
+    );
+
+    if (!order) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Order not found" });
+    }
+
+    if (!order.customerEmail) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Customer email not available" });
+    }
+
+    const salespersonEmail = order.createdBy?.email;
+    const customerEmail = order.customerEmail;
+    const orderDisplayId = order.orderId || order._id;
+
+    const installationEngineer = order.installationeng || "Assigned Engineer";
+
+    const subject = `Installation Assignment: Order #${orderDisplayId}`;
+    const text = `
+Dear ${order.customername || "Customer"},
+
+We are pleased to inform you that an installation engineer has been assigned for your order #${orderDisplayId}.
+
+The installation is scheduled to be completed within the next 2 days.
+
+Details:
+Order ID: ${orderDisplayId}
+Location: ${order.shippingAddress || (order.city ? `${order.city}, ${order.state}` : "N/A")}
+
+Please ensure the site is ready. Our engineer will contact you shortly to coordinate the exact time.
+
+Thank you for choosing Promark Tech Solutions.
+
+Best regards,
+The Promark Tech Solutions Crew
+    `;
+
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+          @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap');
+          body { font-family: 'Poppins', Arial, sans-serif; background-color: #f0f2f5; margin: 0; padding: 0; line-height: 1.6; }
+          .container { max-width: 720px; margin: 40px auto; background-color: #ffffff; border-radius: 24px; overflow: hidden; box-shadow: 0 10px 20px rgba(0,0,0,0.15); }
+          .hero { background: linear-gradient(135deg, #f59e0b, #d97706); padding: 60px 20px; text-align: center; color: white; }
+          .hero h1 { font-size: 28px; font-weight: 700; margin: 0; text-shadow: 0 2px 4px rgba(0,0,0,0.2); }
+          .hero p { font-size: 18px; opacity: 0.9; margin: 10px 0 0; }
+          .content { padding: 40px 30px; }
+          .content h2 { color: #1f2937; font-size: 24px; margin-bottom: 20px; }
+          .content p { color: #4b5563; font-size: 16px; margin-bottom: 20px; }
+          .details-box { background-color: #fffbeb; border-radius: 12px; padding: 25px; border: 1px solid #fcd34d; margin-bottom: 30px; }
+          .details-table { width: 100%; border-collapse: collapse; }
+          .details-table td { padding-bottom: 10px; font-size: 15px; vertical-align: top; }
+          .detail-label { font-weight: 600; color: #92400e; width: 140px; }
+          .detail-value { color: #1e293b; word-wrap: break-word; word-break: break-word; }
+          .footer { text-align: center; padding: 30px; background-color: #f1f5f9; color: #64748b; font-size: 14px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="hero">
+            <h1>Installation Scheduled!</h1>
+            <p>Order #${orderDisplayId}</p>
+          </div>
+          <div class="content">
+            <h2>Dear ${order.customername || "Customer"},</h2>
+            <p>We have successfully assigned an installation engineer for your order. We are committed to completing the installation <strong>within the next 2 days</strong>.</p>
+            
+            <div class="details-box">
+              <table class="details-table" role="presentation">
+                <tr>
+                  <td class="detail-label">Order ID:</td>
+                  <td class="detail-value">${orderDisplayId}</td>
+                </tr>
+                <tr>
+                  <td class="detail-label">Location:</td>
+                  <td class="detail-value">${order.shippingAddress || (order.city ? `${order.city}, ${order.state}` : "N/A")}</td>
+                </tr>
+                <tr>
+                  <td class="detail-label">Timeline:</td>
+                  <td class="detail-value">Within 48 Hours</td>
+                </tr>
+              </table>
+            </div>
+
+            <p>Please ensure the site is ready for installation. Our engineer will coordinate with you for site availability.</p>
+          </div>
+         <div class="footer" style="color: white; background: linear-gradient(135deg, #f59e0b, #d97706); padding:40px; text-align:center;">
+  <p>With enthusiasm,<br/>The Promark Tech Solutions Crew</p>
+  <p>&copy; 2025 <a href="https://promarktechsolutions.com" style="color:#0858cf; text-decoration:none;">Promark Tech Solutions</a>. All rights reserved.</p>
+  <div class="social-icons" style="margin-top:20px;">
+    <a href="https://twitter.com/promarktech"><img src="https://img.icons8.com/color/30/000000/twitter.png" /></a>
+    <a href="https://linkedin.com/company/promarktechsolutions"><img src="https://img.icons8.com/color/30/000000/linkedin.png" /></a>
+    <a href="https://instagram.com/promarktechsolutions"><img src="https://img.icons8.com/color/30/000000/instagram.png" /></a>
+  </div>
+</div>
+
+        </div>
+      </body>
+      </html>
+    `;
+
+    console.log(
+      `Attempting to send Installation Assignment Mail for Order #${orderDisplayId}`,
+    );
+
+    // Send to Customer
+    try {
+      await sendMail(customerEmail, subject, text, html);
+      console.log(
+        `Successfully sent customer email for Order #${orderDisplayId} to ${customerEmail}`,
+      );
+    } catch (msgErr) {
+      console.error(
+        `Failed to send customer email for Order #${orderDisplayId} to ${customerEmail}:`,
+        msgErr,
+      );
+      throw msgErr;
+    }
+
+    // Send to Salesperson (Internal)
+    if (salespersonEmail) {
+      try {
+        await sendMail(
+          salespersonEmail,
+          `[Internal] Installation Assigned - Order #${orderDisplayId}`,
+          `Installation assigned to ${installationEngineer} for Order #${orderDisplayId}. Scheduled within 2 days.\nCustomer: ${order.customername}`,
+          html,
+        );
+        console.log("Internal email sent successfully.");
+      } catch (internalErr) {
+        console.warn("Failed to send internal email copy:", internalErr);
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Installation assignment email sent successfully!",
+    });
+  } catch (error) {
+    console.error("Error in sendInstallationCompletionMail:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to send installation completion email",
+      error: error.message,
+    });
+  }
+};
+
+
+
 module.exports = {
   initSocket,
   getAllOrders,
+  sendInstallationCompletionMail,
   createOrder,
   editEntry,
   DeleteData,

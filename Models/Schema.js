@@ -76,7 +76,7 @@ const orderSchema = new mongoose.Schema(
     actualFreight: { type: Number, min: 0 },
     installchargesstatus: {
       type: String,
-      enum: ["To Pay", "Including", "Extra"],
+      enum: ["To Pay", "Including", "Extra", "Not in Scope"],
       default: "Extra",
     },
     orderType: {
@@ -86,11 +86,12 @@ const orderSchema = new mongoose.Schema(
     },
     gemOrderNumber: { type: String, trim: true, default: "" },
     deliveryDate: { type: Date },
-    installation: { type: String, default: "N/A", trim: true },
+    installationFile: { type: String },
+    installation: { type: String, trim: true },
     installationStatus: { type: String, default: "Pending" },
     installationReport: {
       type: String,
-      enum: ["Yes", "No","Installed"],
+      enum: ["Yes", "No", "Installed"],
       default: "No",
     },
     stamp: {
@@ -156,7 +157,7 @@ const orderSchema = new mongoose.Schema(
     remarks: { type: String, trim: true, default: "" },
     sostatus: {
       type: String,
-      enum: ["Pending for Approval", "Accounts Approved", "Approved", "Order Cancelled","Hold By Production"],
+      enum: ["Pending for Approval", "Accounts Approved", "Approved", "Order Cancelled", "Hold By Production"],
       default: "Pending for Approval",
     },
     createdBy: {
