@@ -3,6 +3,7 @@ const express = require("express");
 const cors = require("cors");
 const http = require("http");
 const path = require("path");
+const multer = require("multer");
 const logger = require("./utils/logger");
 const httpLogger = require("./Middleware/httpLogger");
 const SignupRoute = require("./Router/SignupRoute");
@@ -31,11 +32,25 @@ app.use(httpLogger); // Register HTTP logger first
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cors(corsOptions));
+// Static uploads
+app.use("/Uploads", express.static(path.join(__dirname, "Uploads")));
+
+
 
 // Routes
 app.use("/api", Routes);
 app.use("/auth", LoginRoute);
 app.use("/user", SignupRoute);
+
+// Error handling
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    return res.status(400).json({ success: false, error: `Multer error: ${err.message}` });
+  } else if (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+  next();
+});
 
 // Start server after DB connection
 const PORT = process.env.PORT || 6000;
