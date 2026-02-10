@@ -50,6 +50,7 @@ const upload = multer({
 });
 
 router.get("/get-orders", verifyToken, Controller.getAllOrders);
+router.get("/get-orders-paginated", verifyToken, Controller.getOrdersPaginated);
 router.get(
   "/installation-orders",
   verifyToken,
@@ -67,6 +68,7 @@ router.get(
 
   Controller.getProductionOrders
 );
+router.get("/get-analytics", verifyToken, Controller.getSalesAnalytics);
 router.get("/dashboard-counts", verifyToken, Controller.getDashboardCounts);
 router.get("/finished-goods", verifyToken, Controller.getFinishedGoodsOrders);
 router.get(

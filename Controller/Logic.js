@@ -140,37 +140,6 @@ const getDashboardCounts = async (req, res) => {
     const userId = req.user.id;
     const userRole = req.user.role;
 
-    // Base visibility query
-    let baseQuery = {};
-    if (userRole === "Admin" || userRole === "SuperAdmin") {
-      baseQuery = {};
-    } else {
-      const teamMembers = await User.find({ assignedToLeader: userId }).select("_id");
-      const teamMemberIds = teamMembers.map((m) => m._id);
-      const allUserIds = [userId, ...teamMemberIds];
-      baseQuery = {
-        $or: [
-          { createdBy: { $in: allUserIds } },
-          { assignedTo: { $in: allUserIds } },
-        ],
-      };
-    }
-
-    // Counts
-    const all = await Order.countDocuments(baseQuery);
-
-    const installation = await Order.countDocuments({
-      ...baseQuery,
-      dispatchStatus: "Delivered",
-      installationStatus: { $in: ["Pending", "In Progress", "Site Not Ready", "Hold"] },
-    });
-
-    const dispatch = await Order.countDocuments({
-      ...baseQuery,
-      fulfillingStatus: "Fulfilled",
-      dispatchStatus: { $ne: "Delivered" },
-    });
-
     const dispatchFromOptions = [
       "Patna",
       "Bareilly",
@@ -180,17 +149,31 @@ const getDashboardCounts = async (req, res) => {
       "Jaipur",
       "Rajasthan",
     ];
-    const production = await Order.countDocuments({
-      ...baseQuery,
-      sostatus: "Approved",
-      dispatchFrom: { $nin: dispatchFromOptions },
-      fulfillingStatus: { $ne: "Fulfilled" },
-    });
 
-    return res.status(200).json({ all, installation, production, dispatch });
+    const [all, installation, production, dispatch] = await Promise.all([
+      Order.countDocuments({}), // All orders
+      Order.countDocuments({
+        dispatchStatus: "Delivered",
+        installationStatus: { $in: ["Pending", "In Progress", "Site Not Ready", "Hold"] },
+      }),
+      Order.countDocuments({
+        sostatus: "Approved",
+        dispatchFrom: { $nin: dispatchFromOptions },
+        fulfillingStatus: { $ne: "Fulfilled" },
+      }),
+      Order.countDocuments({
+        fulfillingStatus: "Fulfilled",
+        dispatchStatus: { $ne: "Delivered" },
+      }),
+    ]);
+
+    res.json({ all, installation, production, dispatch });
+    return; // Stop here to avoid executing old code
+
+
   } catch (error) {
-    logger.error("Error in getDashboardCounts", { error });
-    return res.status(500).json({ success: false, error: "Failed to fetch dashboard counts" });
+    console.error("Error in getDashboardCounts:", error);
+    res.status(500).json({ success: false, error: "Failed to fetch dashboard counts", message: error.message, stack: error.stack });
   }
 };
 
@@ -580,6 +563,16 @@ const editEntry = async (req, res) => {
     const updateFields = {};
     for (const field of allowedFields) {
       if (updateData[field] !== undefined) {
+        // Parse JSON strings for complex arrays (needed for FormData/File Uploads)
+        if (field === "products" && typeof updateData[field] === "string") {
+          try {
+            updateFields[field] = JSON.parse(updateData[field]);
+            continue;
+          } catch (e) {
+            logger.warn(`Failed to parse JSON for field ${field}`, { error: e.message });
+          }
+        }
+
         if (
           field.endsWith("Date") &&
           updateData[field] &&
@@ -603,9 +596,8 @@ const editEntry = async (req, res) => {
     if (newFulfill && prevFulfill !== newFulfill) {
       if (newFulfill === "Fulfilled") {
         updateFields.completionStatus = "Complete";
-        if (!existingOrder.fulfillmentDate) {
-          updateFields.fulfillmentDate = new Date();
-        }
+        // Always set fulfillmentDate to current date when status changes to Fulfilled
+        updateFields.fulfillmentDate = new Date();
       }
 
       if (newFulfill === "Order Cancel") {
@@ -1253,213 +1245,110 @@ const bulkUploadOrders = async (req, res) => {
 // Export orders to Excel
 const exportentry = async (req, res) => {
   try {
-    const { role, id } = req.user;
-    let orders;
+    const userId = req.user.id;
+    const userRole = req.user.role;
+    // Use the same query builder as pagination
+    const {
+      search,
+      approval,
+      orderType,
+      dispatch,
+      salesPerson,
+      dispatchFrom,
+      startDate,
+      endDate,
+      dashboardFilter,
+      accountsStatus,
+      installationStatus,
+    } = req.query;
 
-    if (role === "Admin" || role === "SuperAdmin") {
-      orders = await Order.find().lean();
-    } else if (role === "Sales") {
-      orders = await Order.find({ createdBy: id }).lean();
-    } else {
-      orders = await Order.find().lean();
-    }
-
-    if (!Array.isArray(orders) || orders.length === 0) {
-      const ws = XLSX.utils.json_to_sheet([]);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "Orders");
-
-      const fileBuffer = XLSX.write(wb, { bookType: "xlsx", type: "buffer" });
-      res.setHeader(
-        "Content-Disposition",
-        `attachment; filename=orders_${new Date()
-          .toISOString()
-          .slice(0, 10)}.xlsx`
-      );
-      res.setHeader(
-        "Content-Type",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-      );
-      return res.send(fileBuffer);
-    }
-
-    // Format entries for Excel
-    const formattedEntries = orders.flatMap((entry) => {
-      const products =
-        Array.isArray(entry.products) && entry.products.length > 0
-          ? entry.products
-          : [
-            {
-              productType: "Not Found",
-              size: "N/A",
-              spec: "N/A",
-              qty: 0,
-              unitPrice: 0,
-              serialNos: [],
-              modelNos: [],
-              gst: 0,
-              brand: "",
-            },
-          ];
-
-      return products.map((product, index) => {
-        const entryData = {
-          orderId: entry.orderId || "",
-          soDate: entry.soDate
-            ? new Date(entry.soDate).toISOString().slice(0, 10)
-            : "",
-          dispatchFrom: entry.dispatchFrom || "",
-          dispatchDate: entry.dispatchDate
-            ? new Date(entry.dispatchDate).toISOString().slice(0, 10)
-            : "",
-          name: entry.name || "",
-          city: entry.city || "",
-          state: entry.state || "",
-          pinCode: entry.pinCode || "",
-          contactNo: entry.contactNo || "",
-          alterno: entry.alterno || "",
-          customerEmail: entry.customerEmail || "",
-          customername: entry.customername || "",
-        };
-
-        const productData = {
-          productType: product.productType || "",
-          size: product.size || "N/A",
-          spec: product.spec || "N/A",
-          qty: product.qty || 0,
-          unitPrice: product.unitPrice || 0,
-
-          modelNos: Array.isArray(product.modelNos)
-            ? product.modelNos.join(", ")
-            : "",
-          gst: product.gst || 0,
-        };
-
-        const conditionalData =
-          index === 0
-            ? {
-              total: entry.total || 0,
-              paymentCollected: entry.paymentCollected || "",
-              paymentMethod: entry.paymentMethod || "",
-              paymentDue: entry.paymentDue || "",
-              neftTransactionId: entry.neftTransactionId || "",
-              chequeId: entry.chequeId || "",
-              freightcs: entry.freightcs || "",
-              freightstatus: entry.freightstatus || "",
-              installchargesstatus: entry.installchargesstatus || "",
-              gstno: entry.gstno || "",
-              orderType: entry.orderType || "Private",
-              installation: entry.installation || "",
-              installationStatus: entry.installationStatus || "Pending",
-              remarksByInstallation: entry.remarksByInstallation || "",
-              dispatchStatus: entry.dispatchStatus || "Not Dispatched",
-              salesPerson: entry.salesPerson || "",
-              report: entry.report || "",
-              company: entry.company || "Promark",
-
-              transporterDetails: entry.transporterDetails || "",
-
-              shippingAddress: entry.shippingAddress || "",
-              billingAddress: entry.billingAddress || "",
-              invoiceNo: entry.invoiceNo || "",
-              fulfillingStatus: entry.fulfillingStatus || "Pending",
-              remarksByProduction: entry.remarksByProduction || "",
-              remarksByAccounts: entry.remarksByAccounts || "",
-              paymentReceived: entry.paymentReceived || "Not Received",
-              billNumber: entry.billNumber || "",
-              piNumber: entry.piNumber || "",
-              remarksByBilling: entry.remarksByBilling || "",
-              verificationRemarks: entry.verificationRemarks || "",
-              billStatus: entry.billStatus || "Pending",
-              completionStatus: entry.completionStatus || "In Progress",
-              remarks: entry.remarks || "",
-              sostatus: entry.sostatus || "Pending for Approval",
-            }
-            : {
-              total: "",
-              paymentCollected: "",
-              paymentMethod: "",
-              paymentDue: "",
-              neftTransactionId: "",
-              chequeId: "",
-              freightcs: "",
-              freightstatus: "",
-              installchargesstatus: "",
-              gstno: "",
-              orderType: "",
-              installation: "",
-              installationStatus: "",
-              remarksByInstallation: "",
-              dispatchStatus: "",
-              salesPerson: "",
-              report: "",
-              company: "",
-
-              transporterDetails: "",
-
-              shippingAddress: "",
-              billingAddress: "",
-              invoiceNo: "",
-              fulfillingStatus: "",
-              remarksByProduction: "",
-              remarksByAccounts: "",
-              paymentReceived: "",
-              billNumber: "",
-              piNumber: "",
-              remarksByBilling: "",
-              verificationRemarks: "",
-              billStatus: "",
-              completionStatus: "",
-              remarks: "",
-              sostatus: "",
-            };
-
-        const dateData = {
-          receiptDate: entry.receiptDate
-            ? new Date(entry.receiptDate).toISOString().slice(0, 10)
-            : "",
-          invoiceDate: entry.invoiceDate
-            ? new Date(entry.invoiceDate).toISOString().slice(0, 10)
-            : "",
-          fulfillmentDate: entry.fulfillmentDate
-            ? new Date(entry.fulfillmentDate).toISOString().slice(0, 10)
-            : "",
-        };
-
-        return {
-          ...entryData,
-          ...productData,
-          ...conditionalData,
-          ...dateData,
-        };
-      });
+    const query = await buildOrderQuery({
+      userId,
+      userRole,
+      search,
+      approval,
+      orderType,
+      dispatch,
+      salesPerson,
+      dispatchFrom,
+      startDate,
+      endDate,
+      dashboardFilter,
+      accountsStatus,
+      installationStatus,
     });
 
-    const ws = XLSX.utils.json_to_sheet(formattedEntries);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Orders");
+    const orders = await Order.find(query)
+      .populate({ path: "createdBy", select: "username" })
+      .populate({ path: "assignedTo", select: "username" })
+      .sort({ createdAt: -1 });
 
-    const fileBuffer = XLSX.write(wb, { bookType: "xlsx", type: "buffer" });
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename=orders_${new Date()
-        .toISOString()
-        .slice(0, 10)}.xlsx`
-    );
+    const exportData = orders.map((order, index) => {
+      // Flatten products into a single string as requested
+      const productDetails = order.products
+        .map(
+          (p) =>
+            `Product: ${p.productType || "-"} Spec: ${p.spec || "-"} - Qty: ${p.qty || 0} - Model: ${p.modelNos || "-"} - Price: ${p.unitPrice || 0}`
+        )
+        .join(" || ");
+
+      // Format date helper
+      const formatDate = (d) => d ? new Date(d).toLocaleDateString("en-GB") : "-";
+
+      return {
+        "Seq No": index + 1,
+        "Order ID": order.orderId || "-",
+        "SO Date": formatDate(order.soDate),
+        "Customer Name": order.customername || "-",
+        "Contact Person": order.name || "-",
+        "Contact No": order.contactNo || "-",
+        "Email": order.customerEmail || "-",
+        "SO Status": order.sostatus || "-",
+        "City": order.city || "-",
+        "State": order.state || "-",
+        "GST No": order.gstno || "-",
+        "Shipping Address": order.shippingAddress || "-",
+        "Billing Address": order.billingAddress || "-",
+        "Product Details": productDetails, // Consolidated column
+        "Total Qty": order.products.reduce((acc, p) => acc + (p.qty || 0), 0),
+        "Total Amount": order.total || 0,
+        "Payment Collected": order.paymentCollected || 0,
+        "Payment Due": order.paymentDue || 0,
+        "Dispatch Status": order.dispatchStatus || "-",
+        "Production Status": order.fulfillingStatus || "-",
+        "Installation Status": order.installationStatus || "-",
+        "Created By": order.createdBy?.username || "-",
+        "Assigned To": order.assignedTo?.username || "-",
+        "Remarks": order.remarks || "-",
+      };
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(exportData);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Orders");
+
+    const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
-    res.send(fileBuffer);
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=orders_${new Date().toISOString().slice(0, 10)}.xlsx`
+    );
+    res.send(buffer);
   } catch (error) {
-    logger.error("Error in exportentry", { error });
-    res.status(500).json({
-      success: false,
-      message: "Failed to export orders",
-      error: error.message,
-    });
+    console.error("Error in exportentry:", error);
+    res.status(500).json({ error: "Server error" });
   }
 };
+
+
+
+
+
+
 
 // Fetch finished goods orders
 const getFinishedGoodsOrders = async (req, res) => {
@@ -1852,10 +1741,387 @@ The Promark Tech Solutions Crew
   }
 };
 
+// Helper: Build Order Query
+const buildOrderQuery = async ({
+  userId,
+  userRole,
+  search,
+  approval,
+  orderType,
+  dispatch,
+  salesPerson,
+  dispatchFrom,
+  startDate,
+  endDate,
+  dashboardFilter,
+  accountsStatus,
+  installationStatus,
+}) => {
+  const query = {};
 
+  // 1. Role-Based Access Control
+  if (userRole !== "Admin" && userRole !== "SuperAdmin") {
+    // For non-admins, find users they are leaders of
+    const teamMembers = await User.find({ assignedToLeader: userId }).select("_id");
+    const teamMemberIds = teamMembers.map((m) => m._id);
+    const allUserIds = [userId, ...teamMemberIds];
+
+    query.$or = [
+      { createdBy: { $in: allUserIds } },
+      { assignedTo: { $in: allUserIds } },
+    ];
+  }
+
+  // 2. Search Term (Global Search)
+  if (search) {
+    const searchRegex = new RegExp(search, "i");
+    const searchConditions = [
+      { orderId: searchRegex },
+      { customername: searchRegex },
+      { name: searchRegex },
+      { contactNo: searchRegex },
+      { customerEmail: searchRegex },
+      { city: searchRegex },
+      { state: searchRegex },
+      { billingAddress: searchRegex },
+      { shippingAddress: searchRegex },
+      { invoiceNo: searchRegex },
+      { billNumber: searchRegex },
+      { remarks: searchRegex },
+      { sostatus: searchRegex },
+      { dispatchStatus: searchRegex },
+      { fulfillingStatus: searchRegex },
+      { "products.productType": searchRegex },
+      { "products.serialNos": searchRegex },
+      { "products.modelNos": searchRegex },
+    ];
+
+    // If we already have a query.$or from RBAC, we must AND it with the search
+    if (query.$or) {
+      query.$and = [
+        { $or: query.$or },
+        { $or: searchConditions }
+      ];
+      delete query.$or;
+    } else {
+      query.$or = searchConditions;
+    }
+  }
+
+  // 3. Date Range Filter
+  if (startDate && endDate) {
+    query.soDate = {
+      $gte: new Date(startDate),
+      $lte: new Date(endDate),
+    };
+  } else if (startDate) {
+    query.soDate = { $gte: new Date(startDate) };
+  } else if (endDate) {
+    query.soDate = { $lte: new Date(endDate) };
+  }
+
+  // 4. Standard Filters
+
+  // Production Status (approval) Mapping
+  if (approval && approval !== "All") {
+    if (["Pending", "Hold", "Order Cancel"].includes(approval)) {
+      const statusMap = {
+        "Pending": "Pending for Approval",
+        "Hold": "Hold By Production",
+        "Order Cancel": "Order Cancelled"
+      };
+      query.sostatus = statusMap[approval];
+    } else {
+      // "Under Process", "Partial Dispatch", "Fulfilled" map to fulfillingStatus
+      query.fulfillingStatus = approval;
+    }
+  }
+
+  // Product Type (orderType) Mapping
+  if (orderType && orderType !== "All") {
+    const validOrderTypes = ["B2G", "B2C", "B2B", "Demo", "Replacement", "Stock Out"];
+    if (validOrderTypes.includes(orderType)) {
+      query.orderType = orderType;
+    } else {
+      // It is a specific product category (Chairs, Tables, etc.)
+      query["products.productType"] = orderType;
+    }
+  }
+
+  // Dispatch Status
+  if (dispatch && dispatch !== "All") {
+    query.dispatchStatus = dispatch;
+  }
+
+  // Accounts Status
+  if (accountsStatus && accountsStatus !== "All") {
+    query.paymentReceived = accountsStatus;
+  }
+
+  // Installation Status
+  if (installationStatus && installationStatus !== "All") {
+    query.installationStatus = installationStatus;
+  }
+
+  if (salesPerson && salesPerson !== "All") {
+    query.salesPerson = salesPerson;
+  }
+  if (dispatchFrom && dispatchFrom !== "All") {
+    query.dispatchFrom = dispatchFrom;
+  }
+
+  // 5. Dashboard Tracker Filter
+  if (dashboardFilter && dashboardFilter !== "all") {
+    const dispatchFromOptions = [
+      "Patna",
+      "Bareilly",
+      "Ranchi",
+      "Lucknow",
+      "Delhi",
+      "Jaipur",
+      "Rajasthan",
+    ];
+
+    switch (dashboardFilter) {
+      case "installation":
+        query.dispatchStatus = "Delivered";
+        query.installationStatus = {
+          $in: ["Pending", "In Progress", "Site Not Ready", "Hold"]
+        };
+        break;
+      case "production":
+        query.sostatus = "Approved";
+        query.dispatchFrom = { $nin: dispatchFromOptions };
+        query.fulfillingStatus = { $ne: "Fulfilled" };
+        break;
+      case "dispatch":
+        query.fulfillingStatus = "Fulfilled";
+        query.dispatchStatus = { $ne: "Delivered" };
+        break;
+      default:
+        break;
+    }
+  }
+
+  return query;
+};
+
+// Get orders with pagination
+const getOrdersPaginated = async (req, res) => {
+  try {
+    console.log("getOrdersPaginated: Start", req.query); // TRACE
+    const userId = req.user.id;
+    const userRole = req.user.role;
+    console.log("getOrdersPaginated: User", { userId, userRole }); // TRACE
+
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
+
+    const {
+      search,
+      approval,
+      orderType,
+      dispatch,
+      salesPerson,
+      dispatchFrom,
+      startDate,
+      endDate,
+      dashboardFilter,
+      accountsStatus,
+      installationStatus,
+    } = req.query;
+
+    // ✅ USE SHARED QUERY BUILDER - Guarantees identical logic with export
+    const query = await buildOrderQuery({
+      userId,
+      userRole,
+      search,
+      approval,
+      orderType,
+      dispatch,
+      salesPerson,
+      dispatchFrom,
+      startDate,
+      endDate,
+      dashboardFilter,
+      accountsStatus,
+      installationStatus,
+    });
+    console.log("getOrdersPaginated: Query Built", JSON.stringify(query)); // TRACE
+
+    const total = await Order.countDocuments(query);
+    console.log("getOrdersPaginated: Count", total); // TRACE
+
+    // Calculate total product quantity for the filtered result
+    const qtyAggregation = await Order.aggregate([
+      { $match: query },
+      { $unwind: "$products" },
+      { $group: { _id: null, totalQty: { $sum: "$products.qty" } } }
+    ]);
+    const totalProductQty = qtyAggregation.length > 0 ? qtyAggregation[0].totalQty : 0;
+    console.log("getOrdersPaginated: Aggregation Done", totalProductQty); // TRACE
+
+    const orders = await Order.find(query)
+      .populate({
+        path: "createdBy",
+        select: "username email assignedToLeader",
+        populate: { path: "assignedToLeader", select: "username" },
+      })
+      .populate({ path: "assignedTo", select: "username email" })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    console.log("getOrdersPaginated: Orders Found", orders.length); // TRACE
+
+    res.json({
+      data: orders,
+      total,
+      totalProductQty,
+      page,
+      pages: Math.ceil(total / limit),
+    });
+
+  } catch (error) {
+    console.error("Error in getOrdersPaginated:", error.message);
+    res.status(500).json({ error: "Server error", message: error.message, stack: error.stack });
+  }
+}
+
+
+// Get Sales Analytics (Dashboard)
+const getSalesAnalytics = async (req, res) => {
+  try {
+    const {
+      startDate,
+      endDate,
+      productionStatus,
+      productType,
+      installStatus,
+      accountsStatus,
+      dispatchStatus
+    } = req.query;
+    const userId = req.user.id;
+    const userRole = req.user.role;
+
+    console.log("[Analytics] Received filters:", {
+      startDate, endDate, productionStatus, productType,
+      installStatus, accountsStatus, dispatchStatus
+    });
+
+    // Adjust endDate to cover the full day before passing to buildOrderQuery
+    let adjustedEndDate = endDate;
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      adjustedEndDate = end.toISOString();
+    }
+
+    // Use buildOrderQuery to handle all filters consistently
+    const matchQuery = await buildOrderQuery({
+      userId,
+      userRole,
+      startDate: startDate ? new Date(startDate).toISOString() : undefined,
+      endDate: adjustedEndDate,
+      approval: productionStatus,
+      orderType: productType,
+      installationStatus: installStatus,
+      accountsStatus,
+      dispatch: dispatchStatus
+    });
+
+    console.log("[Analytics] Built match query:", JSON.stringify(matchQuery, null, 2));
+
+    // Ensure we exclude cancelled orders even if not filtered by productionStatus
+    if (!matchQuery.sostatus) {
+      matchQuery.sostatus = { $ne: "Order Cancelled" };
+    } else if (typeof matchQuery.sostatus === 'string' && matchQuery.sostatus === "Order Cancelled") {
+      // If the filter specifically includes "Order Cancelled", we allow it?
+      // But Usually analytics should exclude them.
+    }
+
+    // 4. Aggregation Pipeline
+    const pipeline = [
+      { $match: matchQuery },
+      {
+        $group: {
+          _id: "$createdBy",
+          totalOrders: { $sum: 1 },
+          totalAmount: { $sum: "$total" },
+          totalPaymentCollected: {
+            $sum: {
+              $convert: { input: "$paymentCollected", to: "double", onError: 0, onNull: 0 }
+            }
+          },
+          totalPaymentDue: {
+            $sum: {
+              $convert: { input: "$paymentDue", to: "double", onError: 0, onNull: 0 }
+            }
+          },
+          totalUnitPrice: {
+            $sum: {
+              $reduce: {
+                input: "$products",
+                initialValue: 0,
+                in: { $add: ["$$value", { $multiply: [{ $ifNull: ["$$this.unitPrice", 0] }, { $ifNull: ["$$this.qty", 0] }] }] }
+              }
+            }
+          },
+          dueOver30Days: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $gt: [{ $convert: { input: "$paymentDue", to: "double", onError: 0, onNull: 0 } }, 0] },
+                    { $gt: [{ $divide: [{ $subtract: [new Date(), "$soDate"] }, 1000 * 60 * 60 * 24] }, 30] }
+                  ]
+                },
+                { $convert: { input: "$paymentDue", to: "double", onError: 0, onNull: 0 } },
+                0
+              ]
+            }
+          }
+        }
+      },
+      {
+        $lookup: {
+          from: "users", // Collection name in MongoDB (usually lowercase plural)
+          localField: "_id",
+          foreignField: "_id",
+          as: "creator"
+        }
+      },
+      {
+        $unwind: { path: "$creator", preserveNullAndEmptyArrays: true }
+      },
+      {
+        $project: {
+          _id: 1,
+          createdBy: { $ifNull: ["$creator.username", "Unknown"] },
+          totalOrders: 1,
+          totalAmount: 1,
+          totalPaymentCollected: 1,
+          totalPaymentDue: 1,
+          totalUnitPrice: 1,
+          dueOver30Days: 1
+        }
+      }
+    ];
+
+    const analytics = await Order.aggregate(pipeline);
+
+    res.status(200).json(analytics);
+
+  } catch (error) {
+    console.error("Error in getSalesAnalytics:", error);
+    res.status(500).json({ error: "Server error", message: error.message });
+  }
+};
 
 module.exports = {
   initSocket,
+  getOrdersPaginated,
   getAllOrders,
   sendInstallationCompletionMail,
   createOrder,
@@ -1863,6 +2129,7 @@ module.exports = {
   DeleteData,
   bulkUploadOrders,
   exportentry,
+  getSalesAnalytics,
   getFinishedGoodsOrders,
   getVerificationOrders,
   getProductionApprovalOrders,
@@ -1873,5 +2140,6 @@ module.exports = {
   getNotifications,
   markNotificationsRead,
   clearNotifications,
-  getDashboardCounts
+  getDashboardCounts,
+  getSalesAnalytics
 };
